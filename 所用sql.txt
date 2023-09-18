@@ -1,0 +1,137 @@
+-- bitmap表建表
+drop table user_active_bitmap;
+create table user_active_bitmap(
+     id int,
+     active_bitmap binary
+)
+    partitioned by (dt string)
+stored as orc;
+
+
+-- 原始日活表
+drop table user_day_active;
+create table user_day_active(
+     id int,
+     name string,
+     age int
+)
+partitioned by (dt string)
+stored as orc;
+
+-- 原始日活表测试数据
+insert into table user_day_active partition (dt ='2023-09-14')
+select  1,'aa',18
+union all
+select  2,'bb',28
+union all
+select  3,'cc',38
+union all
+select  4,'dd',48
+
+
+insert into table user_day_active partition (dt ='2023-09-15')
+select  1,'aa',18
+union all
+select  2,'bb',28
+union all
+select  4,'cc',38
+union all
+select  5,'ee',58
+
+insert into table user_day_active partition (dt ='2023-09-16')
+select  2,'bb',28
+union all
+select  3,'cc',28
+union all
+select  5,'ee',58
+
+
+-- 每日滚动更新bitmap表的sql语句
+with bm as (
+select
+    id,
+    active_bitmap
+from user_active_bitmap
+where dt = '2023-09-15'
+),
+dau as (
+select
+    id
+from user_day_active
+where dt = '2023-09-16'
+)
+
+insert into user_active_bitmap partition(dt='2023-09-16')
+select
+    nvl(bm.id,dau.id) as id,
+    case
+        when bm.id is not null and dau.id is not null then update_bm(bm.active_bitmap,datediff('2023-09-16','2000-01-01'))
+        when bm.id is not null and dau.id is null  then bm.active_bitmap
+        when bm.id is null and dau.id is not null then  create_bm(datediff('2023-09-16','2000-01-01'))
+        end  as active_bitmap
+from bm full join dau
+                  on bm.id=dau.id
+;
+
+-----创建各类bitmap操作的udf函数
+create temporary function update_bm as 'cn.doitedu.BitmapUpdateUdf';
+create temporary function create_bm as 'cn.doitedu.BitmapCreateUdf';
+create temporary function continue_act as 'cn.doitedu.BitmapContinuousActiveUdf';
+create temporary function max_actdays as 'cn.doitedu.BitmapMaxContinuousActiveUdf';
+create temporary function bm_tostr as 'cn.doitedu.BitmapToStringUdf';
+
+
+------各类查询演示
+-- 求指定日期范围内，用户的活跃天数
+select
+    id,
+    act_days(active_bitmap,datediff('2023-09-14','2000-01-01'),datediff('2023-09-16','2000-01-01')) as active_days
+from user_active_bitmap
+where dt='2023-09-16'
+
+
+-- 求指定日期范围内，活跃天数超过3天的用户
+select
+from (
+         select
+             id,
+             act_days(active_bitmap,datediff('2023-09-14','2000-01-01'),datediff('2023-09-16','2000-01-01')) as active_days
+         from user_active_bitmap
+         where dt='2023-09-16' ) o
+where active_days >= 3
+;
+
+-- 求指定日期范围内（2号-5号），连续活跃的用户
+select
+    id
+from user_active_bitmap
+where dt='2023-09-16'
+  and
+    continue_act(active_bitmap,datediff('2023-09-14','2000-01-01'),datediff('2023-09-16','2000-01-01'))
+
+
+-- 求在指定日期范围内（2号-15号），用户的最大连续活跃天数
+select
+    id,
+    max_actdays(active_bitmap,datediff('2023-09-14','2000-01-01'),datediff('2023-09-16','2000-01-01'))
+from user_active_bitmap
+where dt='2023-09-16'
+
+
+-- 求在指定日期范围内（2号-15号），连续活跃天数>=3天的
+select
+    id
+from user_active_bitmap
+where dt='2023-09-16'
+  and
+    continue_act(active_bitmap,datediff('2023-09-14','2000-01-01'),datediff('2023-09-16','2000-01-01'))
+
+
+
+
+
+select
+    id,
+    max_actdays(active_bitmap,datediff('2023-09-14','2000-01-01'),datediff('2023-09-20','2000-01-01')) as max_act
+from user_active_bitmap t
+where dt='2023-09-16'
